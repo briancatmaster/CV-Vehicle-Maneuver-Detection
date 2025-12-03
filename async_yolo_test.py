@@ -6,8 +6,8 @@ import time
 import csv
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
-VIDEO_PATH = "assets/00009_Trim.mp4"
-MODEL_PATH = "yolo11n.pt"
+VIDEO_PATH = "assets/Airport_DropOff_Footage_STOCK.mp4"
+MODEL_PATH = "yolo11m.pt"
 csv_file = open("tracks.csv", "w", newline="")
 csv_writer = csv.writer(csv_file)
 csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "conf", "class"])
@@ -15,15 +15,15 @@ csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "conf", "class
 model = YOLO(MODEL_PATH)
 
 tracker = DeepSort(
-    max_age=40,
-    n_init=3,
+    max_age=125,
+    n_init=6,
     nms_max_overlap=0.6,
-    max_cosine_distance=0.4,
-    nn_budget=100,
-    max_iou_distance=0.7,
-    embedder="mobilenet",
-    half=True,
-    bgr=True
+    max_cosine_distance=0.125,
+    nn_budget=150,
+    max_iou_distance=0.6,
+    #embedder="mobilenet",
+    #half=True,
+    #bgr=True
 )
 
 '''
@@ -53,6 +53,7 @@ tracker = DeepSort(
 )
 '''
 
+frame_id = 0
 results = model.predict(source=VIDEO_PATH, stream=True)
 
 cap = cv2.VideoCapture(VIDEO_PATH)
@@ -66,6 +67,7 @@ out = cv2.VideoWriter("output.mp4", fourcc, fps_in, (width, height))
 
 for r in results:
     frame = r.orig_img.copy()
+    frame_id += 1
     detections = []
     for box in r.boxes:
         x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -95,6 +97,7 @@ for r in results:
         ])
     out.write(frame)
 
+csv_file.close()
 cap.release()
 out.release()
 cv2.destroyAllWindows()
