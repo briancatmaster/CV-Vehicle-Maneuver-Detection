@@ -6,6 +6,7 @@ import time
 import csv
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
+VEHICLE_CLASSES = [2, 3, 5, 6, 7] #car, motorcycle, bus, train, truck
 VIDEO_PATH = "assets/Airport_DropOff_Footage_STOCK.mp4"
 MODEL_PATH = "yolo11m.pt"
 csv_file = open("tracks.csv", "w", newline="")
@@ -66,6 +67,7 @@ fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 out = cv2.VideoWriter("output.mp4", fourcc, fps_in, (width, height))
 
 for r in results:
+    start = time.time()
     frame = r.orig_img.copy()
     frame_id += 1
     detections = []
@@ -73,8 +75,10 @@ for r in results:
         x1, y1, x2, y2 = box.xyxy[0].tolist()
         conf = float(box.conf)
         obj_class  = int(box.cls)
-        ltwh = [x1, y1, x2 - x1, y2 - y1]
-        detections.append((ltwh, conf, obj_class))
+
+        if obj_class in VEHICLE_CLASSES:
+            ltwh = [x1, y1, x2 - x1, y2 - y1]
+            detections.append((ltwh, conf, obj_class))
     tracks = tracker.update_tracks(detections, frame=frame)
 
     for t in tracks:
@@ -96,6 +100,10 @@ for r in results:
             obj_class
         ])
     out.write(frame)
+    end = time.time()
+    fps_runtime = 1 / (end - start)
+    cv2.putText(frame, f"{fps_runtime:.2f} FPS", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
 
 csv_file.close()
 cap.release()
