@@ -55,7 +55,7 @@ tracker = DeepSort(
 '''
 
 frame_id = 0
-results = model.predict(source=VIDEO_PATH, stream=True)
+results = model.predict(source=VIDEO_PATH, stream=True, imgsz=832)
 
 cap = cv2.VideoCapture(VIDEO_PATH)
 width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -65,9 +65,10 @@ cap.release()
 
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 out = cv2.VideoWriter("output.mp4", fourcc, fps_in, (width, height))
+start_time = time.time()
 
 for r in results:
-    start = time.time()
+    frame_start_time = time.time()
     frame = r.orig_img.copy()
     frame_id += 1
     detections = []
@@ -99,7 +100,7 @@ for r in results:
             obj_class
         ])
     end = time.time()
-    fps_runtime = 1 / (end - start)
+    fps_runtime = 1 / (end - frame_start_time)
     #print(f"FPS: {fps_runtime:.2f}")
     cv2.putText(frame, f"{fps_runtime:.2f} FPS", (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
@@ -110,3 +111,5 @@ csv_file.close()
 cap.release()
 out.release()
 cv2.destroyAllWindows()
+total_time = time.time() - start_time
+print("Total Training Time is " + str(total_time) + " seconds")
