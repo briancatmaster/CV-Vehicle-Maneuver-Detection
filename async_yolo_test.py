@@ -8,7 +8,7 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 
 VEHICLE_CLASSES = [2, 3, 5, 6, 7] #car, motorcycle, bus, train, truck
 VIDEO_PATH = "assets/00009_Trim.mp4"
-MODEL_PATH = "yolo11n.pt"
+MODEL_PATH = "yolo11m.pt"
 csv_file = open("tracks.csv", "w", newline="")
 csv_writer = csv.writer(csv_file)
 csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "conf", "class"])
@@ -16,12 +16,12 @@ csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "conf", "class
 model = YOLO(MODEL_PATH)
 
 tracker = DeepSort(
-    max_age=125,
-    n_init=6,
+    max_age=50,
+    n_init=7,
     nms_max_overlap=0.6,
-    max_cosine_distance=0.125,
-    nn_budget=150,
-    max_iou_distance=0.6,
+    max_cosine_distance=0.175,
+    nn_budget=100,
+    max_iou_distance=0.75,
     #embedder="mobilenet",
     #half=True,
     #bgr=True
@@ -111,5 +111,9 @@ csv_file.close()
 cap.release()
 out.release()
 cv2.destroyAllWindows()
+
+#Calculating total training time & average FPS
 total_time = time.time() - start_time
+average_fps = frame_id / total_time
 print("Total Training Time is " + str(total_time) + " seconds")
+print("Average FPS is " + str(average_fps) + " frames-per-second")
