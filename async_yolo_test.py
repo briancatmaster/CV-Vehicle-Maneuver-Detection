@@ -16,12 +16,12 @@ csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "conf", "class
 model = YOLO(MODEL_PATH)
 
 tracker = DeepSort(
-    max_age=50,
-    n_init=7,
+    max_age=125,
+    n_init=6,
     nms_max_overlap=0.6,
-    max_cosine_distance=0.175,
-    nn_budget=100,
-    max_iou_distance=0.75,
+    max_cosine_distance=0.125,
+    nn_budget=150,
+    max_iou_distance=0.6,
     #embedder="mobilenet",
     #half=True,
     #bgr=True
@@ -85,9 +85,14 @@ for r in results:
     for t in tracks:
         if not t.is_confirmed() or t.time_since_update > 0:
             continue
-
         track_id = t.track_id
         x1, y1, x2, y2 = map(int, t.to_ltrb())
+
+        #Kalman Filter Activities
+        bbox = t.to_tlwh()
+        kalman_state = t.mean
+        velocity_x = kalman_state[4]
+        velocity_y = kalman_state[5]
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
         cv2.putText(frame, f"ID {track_id}", (x1, y1 - 10),
@@ -96,6 +101,7 @@ for r in results:
             frame_id,
             track_id,
             x1, y1, x2, y2,
+            velocity_x, velocity_y,
             conf,
             obj_class
         ])
