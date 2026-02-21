@@ -7,11 +7,11 @@ import csv
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 VEHICLE_CLASSES = [2, 3, 5, 6, 7] #car, motorcycle, bus, train, truck
-VIDEO_PATH = "assets/00009_Trim.mp4"
-MODEL_PATH = "yolo11m.pt"
+VIDEO_PATH = "assets/Airport_DropOff_Footage_STOCK.mp4"
+MODEL_PATH = "yolo11n.pt"
 csv_file = open("tracks.csv", "w", newline="")
 csv_writer = csv.writer(csv_file)
-csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "conf", "class"])
+csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "velocity_x", "velocity_y" "conf", "class"])
 
 model = YOLO(MODEL_PATH)
 
@@ -55,7 +55,7 @@ tracker = DeepSort(
 '''
 
 frame_id = 0
-results = model.predict(source=VIDEO_PATH, stream=True, imgsz=832)
+results = model.predict(source=VIDEO_PATH, stream=True)
 
 cap = cv2.VideoCapture(VIDEO_PATH)
 width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -101,7 +101,8 @@ for r in results:
             frame_id,
             track_id,
             x1, y1, x2, y2,
-            velocity_x, velocity_y,
+            velocity_x, 
+            velocity_y,
             conf,
             obj_class
         ])
