@@ -16,6 +16,7 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import precision_score, recall_score, f1_score
 from sklearn.metrics import classification_report, accuracy_score
 from sklearn.model_selection import cross_val_predict
+from sklearn.model_selection import LeaveOneOut
 
 CSV_PATH = "better_tests/tracksid3duplicate.csv"
 OTHER_CSV_PATH = "better_tests/airport_tracks.csv"
@@ -30,15 +31,15 @@ class Vehicle_Pair:
     def confidence(self) -> float:
         return 1.0 #insert function later f(time_diff, pix_dist, velocity_error, trajectory_smoothness)
 
-parking_chains = [
-    [5, 126, 133, 138, 252, 273], # Black SUV
-    [160, 249, 281, 282, 294, 296, 298, 302], # White SUV
-    [56, 66, 68, 71, 85, 108, 111], # Unnamed Vehicle A
-    [263, 287], # Stationary Vehicle
+parking_vehicles = [
+    {5, 126, 133, 138, 252, 273},                          # Black SUV
+    {11, 160, 249, 281, 282, 294, 296, 298, 302},          # White SUV
+    {56, 66, 68, 71, 85, 108, 111},                        # Vehicle A
+    {4, 263, 287},                                           # Stationary
+    {1}, {3}, {6}, {7}, {8}, {9},                           # Isolated
 ]
 
 parking_lot_not_same = {(4, 238), (238, 4)}
-parking_isolated = set()
 
 airport_chains = [
     [1, 24, 1],
@@ -97,6 +98,42 @@ def map_chains_to_tracklets(chains, df_split):
             print(f"  {chain} → {mapped}")
     
     return tracklet_chains
+
+def label_from_vehicle_groups(df_pairs, vehicle_groups, df_split, not_same=None):
+    tracklet_to_vehicle = {}
+    for v_idx, base_ids in enumerate(vehicle_groups):
+        tids = df_split[df_split['track_id'].isin(base_ids)]['tracklet_id'].unique()
+        for tid in tids:
+            tracklet_to_vehicle[tid] = v_idx
+
+    # Build not_same tracklet pairs if provided
+    not_same_tracklets = set()
+    if not_same:
+        for id_a, id_b in not_same:
+            tids_a = df_split[df_split['track_id']==id_a]['tracklet_id'].unique()
+            tids_b = df_split[df_split['track_id']==id_b]['tracklet_id'].unique()
+            for ta in tids_a:
+                for tb in tids_b:
+                    not_same_tracklets.add((ta, tb))
+                    not_same_tracklets.add((tb, ta))
+
+    labels = []
+    for _, row in df_pairs.iterrows():
+        id1, id2 = row['id1'], row['id2']
+        if (id1, id2) in not_same_tracklets:
+            labels.append(0)
+        else:
+            v1 = tracklet_to_vehicle.get(id1)
+            v2 = tracklet_to_vehicle.get(id2)
+            if v1 is None or v2 is None:
+                labels.append(None)
+            elif v1 == v2:
+                labels.append(1)
+            else:
+                labels.append(0)
+
+    df_pairs['y'] = labels
+    return df_pairs
 
 def is_same_vehicle(tid1, tid2, tracklet_chains, not_same_pairs=set(), isolated=set()):
     """
@@ -319,205 +356,104 @@ def get_stable_box(bboxes, use_last=True, n_frames=5):
     avg_h = np.mean([b[3] for b in subset])
     return avg_w, avg_h
 
-def build_relinked_chains(df_predictions, raw_df, threshold=0.50, max_gap=6):
-    """
-    Take model predictions and build connected vehicle chains.
-    Uses a greedy approach: for each tracklet, pick its best 
-    forward link (highest confidence) to avoid conflicts.
-    Then merges flickering chains (same base ID pair, no temporal overlap).
-    """
+def generate_relink_report(df_predictions, raw_df, video_length, max_gap=6,
+                           auto_accept_threshold=0.90,
+                           review_threshold=0.70,
+                           include_low_conf=False):
+    #Generate a chronological analyst-facing CSV from RF pairwise predictions.
+    #No graph logic — just ranked, triage-labeled pairs sorted by time.
 
-    accepted = df_predictions[df_predictions['confidence'] >= threshold].copy()
-    accepted = accepted.sort_values('confidence', ascending=False)
-    used_as_source = set()
-    used_as_target = set()
-    clean_links = []
-
-    for _, row in accepted.iterrows():
-        src, tgt = row['id1'], row['id2']
-        if src not in used_as_source and tgt not in used_as_target:
-            clean_links.append((src, tgt, row['confidence']))
-            used_as_source.add(src)
-            used_as_target.add(tgt)
-
-    G = nx.DiGraph()
-    for src, tgt, conf in clean_links:
-        G.add_edge(src, tgt, confidence=conf)
-
-    chains = []
-    for component in nx.weakly_connected_components(G):
-        subgraph = G.subgraph(component)
-        starts = [n for n in subgraph if subgraph.in_degree(n) == 0]
-
-        for start in starts:
-            chain = [start]
-            current = start
-            while True:
-                successors = list(subgraph.successors(current))
-                if not successors:
-                    break
-                current = successors[0]
-                chain.append(current)
-
-            if len(chain) > 1:
-                chains.append(chain)
-
-    # --- Merge flickering chains (same base ID pair, no temporal overlap) ---
     df_split = split_into_tracklets(raw_df, max_gap=max_gap)
-    tracklet_frames = {}
-    for tid, grp in df_split.groupby('tracklet_id'):
-        tracklet_frames[tid] = (int(grp['frame'].min()), int(grp['frame'].max()))
-
-    merged = True
-    while merged:
-        merged = False
-        for i in range(len(chains)):
-            if chains[i] is None:
-                continue
-            ids_i = {t.split('_')[0] for t in chains[i]}
-            for j in range(i + 1, len(chains)):
-                if chains[j] is None:
-                    continue
-                ids_j = {t.split('_')[0] for t in chains[j]}
-                if len(ids_i & ids_j) < 2:
-                    continue
-                # Check for temporal overlap between different base IDs
-                combined = chains[i] + chains[j]
-                has_overlap = False
-                for idx_a in range(len(combined)):
-                    for idx_b in range(idx_a + 1, len(combined)):
-                        a, b = combined[idx_a], combined[idx_b]
-                        if a.split('_')[0] == b.split('_')[0]:
-                            continue
-                        if a in tracklet_frames and b in tracklet_frames:
-                            a_s, a_e = tracklet_frames[a]
-                            b_s, b_e = tracklet_frames[b]
-                            if a_s <= b_e and b_s <= a_e:
-                                has_overlap = True
-                                break
-                    if has_overlap:
-                        break
-                if not has_overlap:
-                    combined_sorted = sorted(
-                        set(combined),
-                        key=lambda t: tracklet_frames.get(t, (0, 0))[0]
-                    )
-                    chains[i] = combined_sorted
-                    ids_i = {t.split('_')[0] for t in chains[i]}
-                    chains[j] = None
-                    merged = True
-        chains = [c for c in chains if c is not None]
-
-    return chains, clean_links
-
-def summarize_chains(chains, links, raw_df, video_length, max_gap=6):
-    df = split_into_tracklets(raw_df, max_gap=max_gap).copy()
-
     fps = (raw_df['frame'].max() - raw_df['frame'].min()) / video_length
-
-    # Build lookup: tracklet_id -> frame range
+ 
+    # Build tracklet info lookup
     tracklet_info = {}
-    for tid, grp in df.groupby('tracklet_id'):
+    for tid, grp in df_split.groupby('tracklet_id'):
         tracklet_info[tid] = {
             'first_frame': int(grp['frame'].min()),
             'last_frame': int(grp['frame'].max()),
-            'detections': int(len(grp)),
-            'base_id': str(grp['track_id'].iloc[0]),
         }
-
-    print(
-        f"{'Chain':<10} {'Base ID':<10} {'Orig IDs':<18} {'Tracklets':<9} "
-        f"{'First Seen':<12} {'Last Seen':<12} {'Duration':<10} "
-        f"{'Edges':<6} {'AvgConf':<8} {'MinConf':<8} {'MaxGap'}"
-    )
-    print("-" * 120)
-
-    for i, chain in enumerate(chains, start=1):
-        chain_id = f"chain_{i:03d}"
-
-        valid_tracklets = [t for t in chain if t in tracklet_info]
-        if not valid_tracklets:
+ 
+    # Filter by minimum threshold
+    min_threshold = review_threshold if not include_low_conf else 0.0
+    df_filtered = df_predictions[df_predictions['confidence'] >= min_threshold].copy()
+ 
+    rows = []
+    for _, row in df_filtered.iterrows():
+        id_lost = row['id1']
+        id_gained = row['id2']
+        conf = row['confidence']
+ 
+        info_lost = tracklet_info.get(id_lost)
+        info_gained = tracklet_info.get(id_gained)
+        if info_lost is None or info_gained is None:
             continue
-
-        first_frame = min(tracklet_info[t]['first_frame'] for t in valid_tracklets)
-        last_frame = max(tracklet_info[t]['last_frame'] for t in valid_tracklets)
-
-        first_sec = first_frame / fps
-        last_sec = last_frame / fps
-        duration = last_sec - first_sec
-
-        first_ts = f"{int(first_sec // 60)}:{first_sec % 60:05.2f}"
-        last_ts = f"{int(last_sec // 60)}:{last_sec % 60:05.2f}"
-
-        base_id = valid_tracklets[0].split('_')[0]
-        orig_ids = sorted({t.split('_')[0] for t in valid_tracklets})
-        orig_ids_str = ",".join(orig_ids[:4])
-        if len(orig_ids) > 4:
-            orig_ids_str += "..."
-
-        # Only edges that connect consecutive tracklets in this chain
-        chain_edges = []
-        for j in range(1, len(valid_tracklets)):
-            prev_t = valid_tracklets[j - 1]
-            curr_t = valid_tracklets[j]
-            edge = next(
-                (l for l in links if l['src'] == prev_t and l['tgt'] == curr_t),
-                None
-            )
-            if edge is not None:
-                gap = tracklet_info[curr_t]['first_frame'] - tracklet_info[prev_t]['last_frame']
-                edge['time_diff'] = gap
-                chain_edges.append(edge)
-
-        confs = [e['confidence'] for e in chain_edges]
-        gaps = [e['time_diff'] for e in chain_edges]
-
-        avg_conf = np.mean(confs) if confs else 0
-        min_conf = np.min(confs) if confs else 0
-        max_gap = np.max(gaps) if gaps else 0
-
-        print(
-            f"{chain_id:<10} {base_id:<10} {orig_ids_str:<18} {len(valid_tracklets):<9} "
-            f"{first_ts:<12} {last_ts:<12} {duration:>6.1f}s   "
-            f"{len(chain_edges):<6} {avg_conf:<8.2f} {min_conf:<8.2f} {max_gap}"
-        )
-
-        for j, tid in enumerate(valid_tracklets):
-            info = tracklet_info[tid]
-            f1 = info['first_frame']
-            f2 = info['last_frame']
-            dets = info['detections']
-
-            detail = ""
-            if j > 0:
-                prev_t = valid_tracklets[j - 1]
-                edge = next(
-                    (
-                        l for l in links
-                        if l['src'] == prev_t and l['tgt'] == tid
-                    ),
-                    None
-                )
-                if edge is not None:
-                    detail = (
-                        f"  <- conf: {edge['confidence']:.2f}, gap: {edge['time_diff']}"
-                    )
-
-            print(
-                f"    {tid:<12} frames {f1}-{f2} ({dets} detections){detail}"
-            )
-        print()
+ 
+        frame_lost = info_lost['last_frame']
+        frame_gained = info_gained['first_frame']
+        gap_frames = frame_gained - frame_lost
+        gap_seconds = round(gap_frames / fps, 2)
+ 
+        time_lost_sec = frame_lost / fps
+        time_gained_sec = frame_gained / fps
+ 
+        def fmt_time(sec):
+            return f"{int(sec // 60)}:{sec % 60:05.2f}"
+ 
+        # Triage label
+        if conf >= auto_accept_threshold:
+            action = 'auto_accept'
+        elif conf >= review_threshold:
+            action = 'review'
+        else:
+            action = 'low_confidence'
+ 
+        rows.append({
+            '_sort_frame': frame_lost,
+            'id_lost': id_lost,
+            'last_seen': fmt_time(time_lost_sec),
+            'id_gained': id_gained,
+            'first_seen': fmt_time(time_gained_sec),
+            'confidence': round(conf, 3),
+            'action': action,
+            'gap_seconds': gap_seconds,
+        })
+ 
+    report = pd.DataFrame(rows)
+ 
+    # Keep only the best (highest confidence) match per id_lost
+    report = report.sort_values('confidence', ascending=False)
+    report = report.drop_duplicates(subset='id_lost', keep='first')
+ 
+    # Sort chronologically
+    report = report.sort_values('_sort_frame').drop(
+        columns='_sort_frame'
+    ).reset_index(drop=True)
+ 
+    # Final column order
+    cols = ['id_lost', 'last_seen', 'id_gained', 'first_seen', 'confidence', 'action', 'gap_seconds']
+    report = report[cols]
+ 
+    # Print summary
+    total = len(report)
+    auto = (report['action'] == 'auto_accept').sum()
+    review = (report['action'] == 'review').sum()
+    low = (report['action'] == 'low_confidence').sum()
+    print(f"Relink Report: {total} suggested associations")
+    print(f"  auto_accept (>={auto_accept_threshold}): {auto}")
+    print(f"  review ({review_threshold}-{auto_accept_threshold}): {review}")
+    if include_low_conf:
+        print(f"  low_confidence (<{review_threshold}): {low}")
+ 
+    return report
 
 feature_cols = ['traj_sqrt', 'velocity_error', 'speed', 'time_diff', 'pix_dist', 'box_area_ratio', 'area_growth_diff', 'heading_diff', 'aspect_ratio_diff']
 
-"""
 #MODEL TRAINING SECTION
 df_parking_split = split_into_tracklets(df1)
 df_airport_split = split_into_tracklets(df2)
 
-parking_tc = map_chains_to_tracklets(parking_chains, df_parking_split)
 airport_tc = map_chains_to_tracklets(airport_chains, df_airport_split)
-parking_ns_t = {(f"{a}_0", f"{b}_0") for (a, b) in parking_lot_not_same}
 
 ml_data_parking, tracks_parking = generate_candidate_pairs(df1, PARKING_VIDEO_LENGTH)
 ml_data_airport, tracks_airport = generate_candidate_pairs(df2, AIRPORT_VIDEO_LENGTH)
@@ -527,13 +463,18 @@ df_airport = pd.DataFrame(ml_data_airport)
 print(f"\nParking pairs before labeling: {len(df_parking)}")
 print(f"Airport pairs before labeling: {len(df_airport)}")
 
-df_parking['y'] = df_parking.apply(
-    lambda r: is_same_vehicle(r['id1'], r['id2'], parking_tc, parking_ns_t, parking_isolated), axis=1)
+df_parking = label_from_vehicle_groups(df_parking, parking_vehicles, df_parking_split, not_same=parking_lot_not_same)
+
 df_airport['y'] = df_airport.apply(
     lambda r: is_same_vehicle(r['id1'], r['id2'], airport_tc, set(), airport_isolated), axis=1)
 
 print(f"\nParking None: {df_parking['y'].isna().sum()}")
 print(f"Airport None: {df_airport['y'].isna().sum()}")
+
+print("Parking pos:", df_parking[df_parking['y']==1].shape[0])
+print("Parking neg:", df_parking[df_parking['y']==0].shape[0])
+print("Airport pos:", df_airport[df_airport['y']==1].shape[0])
+print("Airport neg:", df_airport[df_airport['y']==0].shape[0])
 
 df_parking['source'] = 'parking_lot'
 df_airport['source'] = 'airport'
@@ -587,13 +528,47 @@ importances = best_rf.feature_importances_
 indices = np.argsort(importances)[::-1]
 sorted_features = [feature_cols[i] for i in indices]
 
-plt.figure(figsize=(10, 6))
-plt.title("Random Forest Feature Importances for Vehicle Linking")
-plt.bar(range(len(importances)), importances[indices], align="center", color='teal')
-plt.xticks(range(len(importances)), sorted_features, rotation=45)
-plt.ylabel("Relative Importance")
+# Match poster font: Latin Modern Sans (lmodern + \sfdefault) ≈ cmss10 in matplotlib
+plt.rcParams.update({
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['cmss10', 'DejaVu Sans'],
+    'mathtext.fontset': 'cm',
+})
+
+readable_feature_names = {
+    'pix_dist': 'Pixel Distance\n(Last to First Position)',
+    'speed': 'Apparent Speed\n(Distance / Frame Gap)',
+    'traj_sqrt': 'Trajectory Prediction\nError (Normalized)',
+    'box_area_ratio': 'Bounding Box\nArea Ratio',
+    'aspect_ratio_diff': 'Aspect Ratio\nDifference',
+    'velocity_error': 'Kalman Velocity\nError',
+    'time_diff': 'Frame Gap\n(Time Between Sightings)',
+    'area_growth_diff': 'Bounding Box\nGrowth Rate Diff',
+    'heading_diff': 'Heading Angle\nDifference',
+}
+sorted_readable = [readable_feature_names[f] for f in sorted_features]
+sorted_importances = importances[indices]
+
+fig, ax = plt.subplots(figsize=(12, 7))
+colors = plt.cm.viridis(np.linspace(0.25, 0.85, len(sorted_importances)))
+bars = ax.barh(range(len(sorted_importances)-1, -1, -1), sorted_importances,
+               color=colors, edgecolor='white', linewidth=0.5, height=0.7)
+for bar, val in zip(bars, sorted_importances):
+    ax.text(bar.get_width() + 0.005, bar.get_y() + bar.get_height()/2,
+            f'{val:.1%}', va='center', ha='left', fontsize=12, fontweight='bold', color='#333333')
+ax.set_yticks(range(len(sorted_readable)-1, -1, -1))
+ax.set_yticklabels(sorted_readable, fontsize=12)
+ax.set_xlabel('Relative Importance', fontsize=14, fontweight='bold')
+ax.set_title('Random Forest Feature Importances\nfor Vehicle Re-Identification Linking',
+             fontsize=16, fontweight='bold', pad=15)
+ax.set_xlim(0, max(sorted_importances) * 1.22)
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.spines['left'].set_visible(False)
+ax.tick_params(left=False)
+ax.grid(axis='x', alpha=0.3, linestyle='--')
 plt.tight_layout()
-plt.savefig("feature_importance.png", dpi=300)
+plt.savefig("feature_importance.png", dpi=300, bbox_inches='tight', facecolor='white')
 print("Plot saved successfully as 'feature_importance.png' in your current directory!")
 
 joblib.dump({
@@ -601,35 +576,50 @@ joblib.dump({
     'threshold_parking': 0.40,
     'threshold_airport': 0.60,
     'feature_cols': feature_cols,
-}, "rf_relink_new_best.pkl")
-"""
+}, "relink_LOOCV.pkl")
 
-bundle = joblib.load("rf_relink_new_best.pkl")
+"""
+bundle = joblib.load("rf_relink_test.pkl")
 best_rf = bundle['model']
 feature_cols = bundle['feature_cols']
 
 scene_type = 'airport'  # or 'airport'
 threshold = bundle[f'threshold_{scene_type}']
 
+# PARKING LOT DATA ONLY
 raw_df = pd.read_csv("better_tests/tracksid3duplicate.csv")
 ml_data, tracks = generate_candidate_pairs(raw_df, 123)
 df = pd.DataFrame(ml_data)
 
 X = df[feature_cols]
 df['confidence'] = best_rf.predict_proba(X)[:, 1]
-df['accept'] = (df['confidence'] >= 0.50).astype(int)
+print(f"Total candidate pairs: {len(df)}")
 
-accepted = df[df['accept'] == 1].sort_values('confidence', ascending=False)
-print(f"Total pairs: {len(df)}")
-print(f"Accepted: {df['accept'].sum()}")
-chains, links = build_relinked_chains(df, raw_df, threshold=threshold, max_gap=6)
+report = generate_relink_report(
+    df, raw_df,
+    video_length=123,
+    max_gap=6,
+    auto_accept_threshold=0.90,
+    review_threshold=0.70,
+    include_low_conf=True,   # set False to hide <0.70
+)
 
-links_dicts = [
-    {'src': l[0], 'tgt': l[1], 'confidence': l[2]}
-    for l in links
-]
+report.to_csv("relink_report.csv", index=False)
+print(f"\nSaved to relink_report.csv")
+print(report.head(20).to_string(index=False))
 
-summarize_chains(chains, links_dicts, raw_df, 123, max_gap=6)
+# Test all data using part before the random forest retrain
+for source_name, df_source in [("Parking", df_parking), ("Airport", df_airport)]:
+    df_labeled = df_source[df_source['y'].notna()].copy()
+    X = df_labeled[feature_cols]
+    y_true = df_labeled['y'].astype(int)
+    y_probs = best_rf.predict_proba(X)[:, 1]
 
-#df_repaired = repair_csv(raw_df, chains, max_gap=6)
-#df_repaired.to_csv("repaired_tracking.csv", index=False)
+    print(f"\n=== {source_name} ({(y_true==1).sum()} pos, {(y_true==0).sum()} neg) ===")
+    for thresh in [0.40, 0.50, 0.60, 0.70]:
+        y_pred = (y_probs >= thresh).astype(int)
+        p = precision_score(y_true, y_pred, zero_division=0)
+        r = recall_score(y_true, y_pred, zero_division=0)
+        f = f1_score(y_true, y_pred, zero_division=0)
+        print(f"  θ={thresh:.2f}  P={p:.2f}  R={r:.2f}  F1={f:.2f}")
+"""
