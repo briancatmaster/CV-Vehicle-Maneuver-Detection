@@ -3,6 +3,15 @@ env/
 venv/
 .venv/
 
+# Videos (too large for plain git) and Windows download markers
+*.mp4
+*:Zone.Identifier
+
+# Generated outputs
+/tracks.csv
+score_out/
+tools/models/*.onnx
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

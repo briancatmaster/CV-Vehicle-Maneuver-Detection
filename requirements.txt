@@ -4,6 +4,13 @@ deep-sort-realtime==1.3.2
 torch
 pandas
 numpy
-scikit-learn
+scipy
+scikit-learn==1.8.0  # tools/models/*.joblib were saved with this version
 matplotlib
+networkx
 joblib
+lap>=0.5.12          # ByteTrack (async_yolo_test.py --tracker bytetrack)
+
+# Optional: DeepSORT's appearance model through ONNX Runtime (--embedder onnx)
+# onnx                 # only for tools/export_embedder_onnx.py
+# onnxruntime
