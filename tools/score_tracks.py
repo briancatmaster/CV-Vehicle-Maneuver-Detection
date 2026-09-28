@@ -219,8 +219,11 @@ def score(path, fps, width, height, model=None, threshold=None, merge=None, scen
     bundle = rl.load_model(model)
     cfg = {**rl.DEFAULT_CONFIG, **bundle.get("config", {})}
     links, t2v, chains = rl.relink(df, fps, width, height, bundle=bundle, threshold=threshold, merge=merge)
-    rel = rl.apply_relink(df, t2v)
-    rel = rel[rel.vehicle_id >= 0]            # every tracklet is mapped; kept as a safety net
+    rel = rl.apply_relink(df, t2v, split_gap=cfg["split_gap"])   # same tracklet split as relink() used
+    n_unmapped = int((rel.vehicle_id < 0).sum())
+    if n_unmapped:                            # should not happen: relink() maps every tracklet
+        print(f"warning: {n_unmapped} rows have no vehicle id (tracklet split mismatch?) and are left out")
+        rel = rel[rel.vehicle_id >= 0]
     clip = (int(df.frame.min()), int(df.frame.max()))
     res_raw = bh.analyze(df, fps, id_col="track_id", clip=clip)
     res_rel = bh.analyze(rel, fps, id_col="vehicle_id", clip=clip)

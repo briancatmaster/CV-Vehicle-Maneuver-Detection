@@ -10,6 +10,8 @@ venv/
 # Generated outputs
 /tracks.csv
 score_out/
+/out/
+relink_LOOCV.pkl
 tools/models/*.onnx
 
 # Byte-compiled / optimized / DLL files

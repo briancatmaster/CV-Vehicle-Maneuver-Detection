@@ -26,13 +26,16 @@ Videos are not in git (`assets/` and `*.mp4` are ignored); put them in `assets/`
 
 ## Setup
 
+Needs Python 3.11 or newer (developed on 3.12).
+
 ```bash
 python -m venv env
 source env/bin/activate        # Windows: env\Scripts\activate
 pip install -r requirements.txt
 ```
 
-`scikit-learn==1.8.0` is pinned because the model bundles in `tools/models/` were saved with it.
+`scikit-learn==1.8.0` is pinned because the model bundles in `tools/models/` were saved with it. With a
+different scikit-learn, rebuild them first: `python tools/train_relinker_v2.py --overwrite` (under a minute).
 
 ## 1. Track a video (`async_yolo_test.py`)
 
@@ -64,7 +67,8 @@ Notes:
 - `--embedder onnx` sets `OPENBLAS_NUM_THREADS=1` itself, before numpy is imported. In torch mode you can
   get part of the same speed-up by running with `OPENBLAS_NUM_THREADS=1`.
 - ByteTrack's default config only starts a new track from a detection with conf ≥ 0.6, and ultralytics
-  fixes its frame rate at 30 (track buffer = 30 frames).
+  fixes its frame rate at 30 (track buffer = 30 frames). As in ultralytics' own `track()` output, a new
+  ByteTrack ID shows up from its second matched frame.
 
 ## 2. Relink and score a tracks file
 
@@ -111,7 +115,7 @@ Always pass `--out-prefix`; without it the outputs are written next to the input
 ### Reproduce / retrain
 
 ```bash
-python tools/test_relinker_v2.py                  # smoke + regression tests, ~20 s, no pytest needed
+python tools/test_relinker_v2.py                  # smoke + regression tests, under a minute, no pytest needed
 python tools/eval_repo_clips.py                   # the repo-clip numbers above
 python tools/train_relinker_v2.py --out some/dir  # retrain; matches tools/models exactly
 python tools/train_relinker_v2.py --overwrite     # replace tools/models/*.joblib
